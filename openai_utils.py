@@ -1,81 +1,91 @@
-# openai_utils.py
-
-import base64
 import logging
-from openai import OpenAI
+from openai import AsyncOpenAI
 from config import OPENAI_API_KEY
-from prompts import AGENT_SYSTEM_PROMPT_TEMPLATE
 
-# Инициализация клиента и логгера
-client = OpenAI(api_key=OPENAI_API_KEY)
 logger = logging.getLogger(__name__)
+client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-def analyze_food_image(image_path: str, system_prompt: str) -> str:
+async def analyze_food_image(
+    image_url: str,
+    system_prompt: str,
+    history: list[str] | None = None,
+    user_caption: str | None = None
+) -> str:
     """
-    Анализирует изображение еды, логирует payload и возвращает ответ от OpenAI.
+    Анализ фото по его публичному URL.
+    - image_url: URL картинки (telegram.org/file/…)
+    - system_prompt: ваш промпт
+    - history: тексты прошлых ответов за день
+    - user_caption: подпись к фото (если есть)
     """
-    with open(image_path, "rb") as image_file:
-        b64 = base64.b64encode(image_file.read()).decode("utf-8")
+    # 1) Собираем систему и историю
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    if history:
+        for prev in history:
+            messages.append({"role": "assistant", "content": prev})
 
+    # 2) Формируем user-сообщение как массив content
+    content_items: list[dict] = [
+        {"type": "image_url", "image_url": {"url": image_url}}
+    ]
+    if user_caption:
+        content_items.append({"type": "text", "text": user_caption})
+
+    messages.append({"role": "user", "content": content_items})
+
+    # 3) DEBUG-лог
+    logger.debug("=== analyze_food_image REQUEST ===")
+    for msg in messages:
+        logger.debug("%s %s", msg["role"], msg["content"] if msg["role"]!="user" else "[USER image/text items]")
+
+    # 4) Отправляем
+    resp = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages
+    )
+    return resp.choices[0].message.content.strip()
+
+
+async def analyze_food_text(
+    text: str,
+    system_prompt: str,
+    history: list[str] | None = None
+) -> str:
+    """
+    Анализ текстового описания еды.
+    """
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    if history:
+        for prev in history:
+            messages.append({"role": "assistant", "content": prev})
+    messages.append({"role": "user", "content": text})
+
+    logger.debug("=== analyze_food_text REQUEST ===")
+    for msg in messages:
+        logger.debug("%s %s", msg["role"], msg["content"])
+
+    resp = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages
+    )
+    return resp.choices[0].message.content.strip()
+
+
+async def summarize_daily_intake(analyses: list[str]) -> str:
+    """
+    Сводка по списку текстовых анализов.
+    """
     messages = [
-        {"role": "system", "content": system_prompt},
-        {
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-            ],
-        },
+        {"role": "system", "content": "Ты — агрегатор и суммаризатор дневной информации о питании."},
+        {"role": "user",   "content": "Сделай короткий свод по этим записям:\n\n" + "\n\n".join(analyses)},
     ]
 
-    # Логируем payload перед отправкой
-    logger.debug("=== OpenAI REQUEST (analyze_food_image) ===")
-    logger.debug("Model: gpt-4o")
-    logger.debug("Messages: %s", messages)
+    logger.debug("=== summarize_daily_intake REQUEST ===")
+    for msg in messages:
+        logger.debug("%s %s", msg["role"], msg["content"])
 
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=messages,
-        max_tokens=600,
+    resp = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages
     )
-    return response.choices[0].message.content
-
-def analyze_food_text(description: str, system_prompt: str) -> str:
-    """
-    Анализирует текстовое описание еды, логирует payload и возвращает ответ.
-    """
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": description},
-    ]
-
-    logger.debug("=== OpenAI REQUEST (analyze_food_text) ===")
-    logger.debug("Model: gpt-4o")
-    logger.debug("Messages: %s", messages)
-
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=messages,
-        max_tokens=300,
-    )
-    return response.choices[0].message.content
-
-def summarize_daily_intake(logs: list, system_prompt: str) -> str:
-    """
-    Формирует итоговый отчёт, логирует payload и возвращает ответ.
-    """
-    combined = "\n\n".join(logs)
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": combined},
-    ]
-
-    logger.debug("=== OpenAI REQUEST (summarize_daily_intake) ===")
-    logger.debug("Model: gpt-4o")
-    logger.debug("Messages: %s", messages)
-
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=messages,
-        max_tokens=400,
-    )
-    return response.choices[0].message.content
+    return resp.choices[0].message.content.strip()

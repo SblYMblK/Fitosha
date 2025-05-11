@@ -36,7 +36,6 @@ Communication protocol:
    - net calories (consumed – burned),
    - accumulated protein, fat, carbs,
    - remaining calories and macros for the day according to the user profile.
-
 3. Recommendations based on calories consumed and the balance of the user's goals
 4. If the user asks you to choose a meal (e.g. lunch menu), select options that fit within their remaining calorie and macronutrient targets.
 
