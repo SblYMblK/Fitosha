@@ -11,3 +11,9 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+
+# Temporary files
+temp_*
+*.jpg
+*.jpeg
+*.png
