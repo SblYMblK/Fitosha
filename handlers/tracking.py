@@ -152,11 +152,76 @@ async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❗ День ещё не начат. Используйте /start_day")
         return
 
+    # Отправляем сообщение о подготовке итогов
+    message = update.message or update.callback_query.message
+    progress_message = await message.reply_text(
+        "🔄 Фитоша анализирует ваш день и готовит подробный отчет...\n"
+        "Это займет несколько секунд."
+    )
+
     totals = context.user_data.get('daily_totals', {})
     goals = context.user_data.get('daily_goals', {})
+    logs = context.user_data.get('logs', [])
     
     net_calories = totals.get('calories', 0) - totals.get('burned', 0)
     goal_calories = goals.get('calories', 0)
+    
+    # Группируем логи по типам приемов пищи
+    meals_breakdown = {
+        'Завтрак': {'calories': 0, 'protein': 0, 'fat': 0, 'carbs': 0, 'items': []},
+        'Обед': {'calories': 0, 'protein': 0, 'fat': 0, 'carbs': 0, 'items': []},
+        'Ужин': {'calories': 0, 'protein': 0, 'fat': 0, 'carbs': 0, 'items': []},
+        'Перекус': {'calories': 0, 'protein': 0, 'fat': 0, 'carbs': 0, 'items': []},
+        'Физическая активность': {'burned': 0, 'items': []}
+    }
+    
+    # Анализируем логи
+    logger.info(f"Начинаем анализ логов. Всего записей: {len(logs)}")
+    for log in logs:
+        if '[АНАЛИЗ]' in log:
+            meal_type = None
+            # Проверяем тип записи
+            if isinstance(log, dict):
+                meal_type = log.get('meal_type')
+                logger.info(f"Найдена запись типа dict с meal_type: {meal_type}")
+            else:
+                # Если лог является строкой, ищем тип в тексте
+                for type_name in meals_breakdown.keys():
+                    if type_name in log:
+                        meal_type = type_name
+                        logger.info(f"Найдена запись типа string с meal_type: {meal_type}")
+                        break
+            
+            if not meal_type:
+                logger.warning(f"Не удалось определить тип приема пищи для записи: {log[:100]}...")
+                continue
+
+            if meal_type == 'Физическая активность':
+                log_text = log if isinstance(log, str) else log.get('analysis', '')
+                calories_match = re.search(r'Сожжено: (\d+)', log_text)
+                if calories_match:
+                    burned = int(calories_match.group(1))
+                    meals_breakdown[meal_type]['burned'] += burned
+                    logger.info(f"Добавлена физическая активность: {burned} ккал")
+                    activity_desc = re.search(r'\[АНАЛИЗ\](.*?)\[', log_text)
+                    if activity_desc:
+                        meals_breakdown[meal_type]['items'].append(activity_desc.group(1).strip())
+            else:
+                log_text = log if isinstance(log, str) else log.get('analysis', '')
+                nutrients = extract_nutrients(log_text)
+                if meal_type and nutrients:
+                    meals_breakdown[meal_type]['calories'] += nutrients['calories']
+                    meals_breakdown[meal_type]['protein'] += nutrients['protein']
+                    meals_breakdown[meal_type]['fat'] += nutrients['fat']
+                    meals_breakdown[meal_type]['carbs'] += nutrients['carbs']
+                    logger.info(f"Добавлен прием пищи {meal_type}: {nutrients}")
+                    food_desc = re.search(r'\[АНАЛИЗ\](.*?)\[', log_text)
+                    if food_desc:
+                        meals_breakdown[meal_type]['items'].append(food_desc.group(1).strip())
+    
+    logger.info("Итоговая разбивка по приемам пищи:")
+    for meal_type, data in meals_breakdown.items():
+        logger.info(f"{meal_type}: {data}")
     
     # Анализируем достижение целей
     calories_diff = net_calories - goal_calories
@@ -172,25 +237,60 @@ async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         calories_status = f"⚠️ Недобор калорий на {abs(calories_diff)} ккал"
     
-    summary = (
-        f"📊 *Итоги дня {context.user_data['date'].strftime('%d.%m.%Y')}*\n\n"
-        f"🍽 *Потребление:*\n"
-        f"• Калории: {totals.get('calories', 0)} ккал\n"
-        f"• Белки: {totals.get('protein', 0)}г\n"
-        f"• Жиры: {totals.get('fat', 0)}г\n"
-        f"• Углеводы: {totals.get('carbs', 0)}г\n\n"
-        f"🏃‍♂️ *Активность:*\n"
-        f"• Сожжено калорий: {totals.get('burned', 0)} ккал\n\n"
-        f"📈 *Итого:*\n"
-        f"• Чистые калории: {net_calories} ккал\n"
-        f"• Цель: {goal_calories} ккал\n\n"
-        f"{calories_status}"
-    )
+    # Формируем детальный отчет
+    summary_parts = [f"📊 *Итоги дня {context.user_data['date'].strftime('%d.%m.%Y')}*"]
+    
+    # Общие показатели
+    summary_parts.append("\n💫 *Общие показатели:*")
+    summary_parts.append(f"• Потреблено калорий: {totals.get('calories', 0)} ккал")
+    summary_parts.append(f"• Сожжено калорий: {totals.get('burned', 0)} ккал")
+    summary_parts.append(f"• Итого калорий: {net_calories} ккал")
+    summary_parts.append(f"• Цель: {goal_calories} ккал")
+    summary_parts.append(f"• {calories_status}")
+    
+    # Макронутриенты
+    summary_parts.append("\n🔬 *Макронутриенты:*")
+    summary_parts.append(f"• Белки: {totals.get('protein', 0)}г / {goals.get('protein', 0)}г")
+    summary_parts.append(f"• Жиры: {totals.get('fat', 0)}г / {goals.get('fat', 0)}г")
+    summary_parts.append(f"• Углеводы: {totals.get('carbs', 0)}г / {goals.get('carbs', 0)}г")
+    
+    # Разбивка по приемам пищи
+    meals_section = []
+    has_meals = False
+    for meal_type, data in meals_breakdown.items():
+        if meal_type != 'Физическая активность':
+            if data['calories'] > 0:
+                has_meals = True
+                meals_section.append(f"\n*{meal_type}* ({data['calories']} ккал):")
+                meals_section.append(f"• Б: {data['protein']}г, Ж: {data['fat']}г, У: {data['carbs']}г")
+                if data['items']:
+                    meals_section.append("• Состав: " + ", ".join(data['items']))
+    
+    # Добавляем секцию приемов пищи только если они есть
+    if has_meals:
+        summary_parts.append("\n🍽 *Приемы пищи:*")
+        summary_parts.extend(meals_section)
+    
+    # Физическая активность
+    if meals_breakdown['Физическая активность']['burned'] > 0:
+        summary_parts.append("\n🏃‍♂️ *Физическая активность:*")
+        summary_parts.append(f"• Всего сожжено: {meals_breakdown['Физическая активность']['burned']} ккал")
+        if meals_breakdown['Физическая активность']['items']:
+            summary_parts.append("• Активности: " + "\n  ▫️ ".join([''] + meals_breakdown['Физическая активность']['items']))
+    
+    summary = "\n".join(summary_parts)
 
     # Получаем рекомендации на основе итогов дня
+    formatted_logs = []
+    for log in context.user_data.get('logs', []):
+        if isinstance(log, dict):
+            formatted_logs.append(log.get('analysis', ''))
+        else:
+            formatted_logs.append(log)
+
     recommendations = await get_recommendations(
         context.user_data['system_prompt'],
-        context.user_data['logs'],
+        formatted_logs,
         summary
     )
 
@@ -207,7 +307,8 @@ async def end_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'summary': summary,
             'recommendations': recommendations,
             'totals': totals,
-            'goals': goals
+            'goals': goals,
+            'meals_breakdown': meals_breakdown
         }
     ))
     session.commit()
@@ -418,20 +519,26 @@ async def show_day_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     net_calories = totals.get('calories', 0) - totals.get('burned', 0)
     goal_calories = goals.get('calories', 0)
     
-    stats = (
-        f"📊 Статистика на {context.user_data['date'].strftime('%d.%m.%Y')}:\n\n"
-        f"🍽 Потреблено калорий: {totals.get('calories', 0)} ккал\n"
-        f"🏃‍♂️ Сожжено калорий: {totals.get('burned', 0)} ккал\n"
-        f"📈 Итого калорий: {net_calories} ккал\n"
-        f"🎯 Цель: {goal_calories} ккал\n\n"
-        f"🥩 Белки: {totals.get('protein', 0)}г / {goals.get('protein', 0)}г\n"
-        f"🥑 Жиры: {totals.get('fat', 0)}г / {goals.get('fat', 0)}г\n"
-        f"🍚 Углеводы: {totals.get('carbs', 0)}г / {goals.get('carbs', 0)}г"
-    )
+    # Формируем упрощенный отчет
+    stats = [f"📊 Статистика на {context.user_data['date'].strftime('%d.%m.%Y')}:"]
+    
+    # Общие показатели
+    stats.append("\n💫 *Общие показатели:*")
+    stats.append(f"• Потреблено калорий: {totals.get('calories', 0)} ккал")
+    stats.append(f"• Сожжено калорий: {totals.get('burned', 0)} ккал")
+    stats.append(f"• Итого калорий: {net_calories} ккал")
+    stats.append(f"• Цель: {goal_calories} ккал")
+    
+    # Макронутриенты
+    stats.append("\n🔬 *Макронутриенты:*")
+    stats.append(f"• Белки: {totals.get('protein', 0)}г / {goals.get('protein', 0)}г")
+    stats.append(f"• Жиры: {totals.get('fat', 0)}г / {goals.get('fat', 0)}г")
+    stats.append(f"• Углеводы: {totals.get('carbs', 0)}г / {goals.get('carbs', 0)}г")
 
     await update.callback_query.message.edit_text(
-        stats,
-        reply_markup=get_main_keyboard()
+        "\n".join(stats),
+        reply_markup=get_main_keyboard(),
+        parse_mode='Markdown'
     )
 
 def clear_conversation_state(context: ContextTypes.DEFAULT_TYPE):
@@ -479,7 +586,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         analysis = await analyze_food_image(
             photo_url,
             context.user_data['system_prompt'],
-            context.user_data.get('logs', []),
+            [log.get('analysis', log) if isinstance(log, dict) else log for log in context.user_data.get('logs', [])],
             update.message.caption
         )
         
@@ -512,7 +619,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Добавляем анализ в историю дня
         if 'logs' not in context.user_data:
             context.user_data['logs'] = []
-        context.user_data['logs'].append(analysis)
+        context.user_data['logs'].append({
+            'type': 'meal',
+            'meal_type': context.user_data.get('meal_type', 'Прием пищи'),
+            'analysis': analysis
+        })
         
         # Удаляем сообщение о прогрессе
         await progress_message.delete()
@@ -567,17 +678,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         analysis = await analyze_food_text(
             update.message.text,
             context.user_data['system_prompt'],
-            context.user_data.get('logs', [])
+            [log.get('analysis', log) if isinstance(log, dict) else log for log in context.user_data.get('logs', [])]
         )
         
         # Обновляем статистику
-        nutrients = extract_nutrients(analysis)
         if context.user_data.get('meal_type') == 'Физическая активность':
             calories_burned = extract_calories_burned(analysis)
-            context.user_data['daily_totals']['burned'] = \
-                context.user_data['daily_totals'].get('burned', 0) + calories_burned
+            if calories_burned > 0:
+                context.user_data['daily_totals']['burned'] = \
+                    context.user_data['daily_totals'].get('burned', 0) + calories_burned
+                logger.info(f"Добавлена физическая активность: сожжено {calories_burned} ккал")
         else:
+            nutrients = extract_nutrients(analysis)
             update_daily_totals(context.user_data['daily_totals'], nutrients)
+            logger.info(f"Добавлен прием пищи {context.user_data.get('meal_type')}: {nutrients}")
         
         # Сохраняем запись
         session = Session()
@@ -590,8 +704,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'meal_type': context.user_data.get('meal_type', 'Прием пищи'),
                 'text': update.message.text,
                 'analysis': analysis,
-                'nutrients': nutrients if context.user_data.get('meal_type') != 'Физическая активность' else None,
-                'calories_burned': calories_burned if context.user_data.get('meal_type') == 'Физическая активность' else None
+                'calories_burned': calories_burned if context.user_data.get('meal_type') == 'Физическая активность' else 0
             }
         )
         session.add(log_entry)
@@ -601,7 +714,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Добавляем анализ в историю дня
         if 'logs' not in context.user_data:
             context.user_data['logs'] = []
-        context.user_data['logs'].append(analysis)
+        context.user_data['logs'].append({
+            'type': 'activity' if context.user_data.get('meal_type') == 'Физическая активность' else 'meal',
+            'meal_type': context.user_data.get('meal_type', 'Прием пищи'),
+            'analysis': analysis,
+            'calories_burned': calories_burned if context.user_data.get('meal_type') == 'Физическая активность' else 0
+        })
         
         # Удаляем сообщение о прогрессе
         await progress_message.delete()
@@ -673,9 +791,16 @@ async def handle_open_query(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         )
         
         # Получаем рекомендации с учетом контекста
+        formatted_logs = []
+        for log in context.user_data.get('logs', []):
+            if isinstance(log, dict):
+                formatted_logs.append(log.get('analysis', ''))
+            else:
+                formatted_logs.append(log)
+
         recommendations = await get_recommendations(
             system_prompt,
-            context.user_data.get('logs', []),
+            formatted_logs,
             f"Контекст:\n{context_info}\n\nВопрос пользователя: {user_query}"
         )
         
@@ -696,6 +821,7 @@ async def handle_open_query(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         )
         session.add(log_entry)
         session.commit()
+        session.close()
         
         # Добавляем запрос в историю дня
         if 'logs' not in context.user_data:
@@ -703,19 +829,30 @@ async def handle_open_query(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         context.user_data['logs'].append(f"Вопрос: {user_query}\nОтвет: {recommendations}")
         
         # Удаляем сообщение о прогрессе
-        await progress_message.delete()
+        if progress_message:
+            await progress_message.delete()
         
-        await update.message.reply_text(
-            f"💡 *Ответ на ваш вопрос:*\n\n{formatted_response}",
-            parse_mode='Markdown',
-            reply_markup=get_main_keyboard()
-        )
+        # Отправляем ответ с форматированием
+        if formatted_response:
+            await update.message.reply_text(
+                f"💡 *Ответ на ваш вопрос:*\n\n{formatted_response}",
+                parse_mode='Markdown',
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            # Если форматированный ответ пустой, отправляем оригинальные рекомендации
+            await update.message.reply_text(
+                f"💡 *Ответ на ваш вопрос:*\n\n{recommendations}",
+                parse_mode='Markdown',
+                reply_markup=get_main_keyboard()
+            )
         
     except Exception as e:
         logger.error("Ошибка при обработке запроса: %s", e)
-        await progress_message.edit_text(
-            "❌ Произошла ошибка при обработке запроса. Пожалуйста, попробуйте еще раз."
-        )
+        if progress_message:
+            await progress_message.edit_text(
+                "❌ Произошла ошибка при обработке запроса. Пожалуйста, попробуйте еще раз."
+            )
 
 def extract_nutrients(analysis: str) -> dict:
     """Извлекает информацию о нутриентах из анализа"""
@@ -767,7 +904,9 @@ def extract_calories_burned(analysis: str) -> int:
         for line in calories_text.split('\n'):
             line = line.strip()
             if 'Сожжено:' in line:
-                return int(line.split(':')[1].replace('ккал', '').strip())
+                calories = int(line.split(':')[1].replace('ккал', '').strip())
+                logger.info(f"Извлечено сожженных калорий: {calories}")
+                return calories
         
         return 0
     except Exception as e:
@@ -778,6 +917,7 @@ def update_daily_totals(totals: dict, nutrients: dict):
     """Обновляет дневные итоги на основе новых данных"""
     for key in ('calories', 'protein', 'fat', 'carbs'):
         totals[key] = totals.get(key, 0) + nutrients.get(key, 0)
+    logger.info(f"Обновлены дневные итоги: {totals}")
 
 def register_tracking_handlers(app):
     # Конверсация для логирования приема пищи
