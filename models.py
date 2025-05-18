@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, JSON
+from sqlalchemy import Column, Integer, String, Date, JSON, DateTime
 from database import Base, engine
 
 class User(Base):
@@ -12,6 +12,7 @@ class DailyLog(Base):
     id = Column(Integer, primary_key=True)
     telegram_id = Column(Integer)
     date = Column(Date)
+    time = Column(DateTime, nullable=False)
     data = Column(JSON)
 
 Base.metadata.create_all(engine)
